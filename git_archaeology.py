@@ -443,28 +443,34 @@ def _(mo, repo_params, repo_url_input):
 def _(alt, pl, res):
     _version_data = [
         {"version": key, "datetime": value[0]["upload_time"]}
-        for key, value in res["releases"].items()
+        for key, value in res.get("releases", {}).items()
         if key.endswith(".0") and key != "0.0.0" and len(value) > 0
     ]
-    df_versions = pl.DataFrame(
-        _version_data,
-        schema={"version": pl.Utf8, "datetime": pl.Utf8},
-    ).with_columns(datetime=pl.col("datetime").str.to_datetime())
+    has_versions = len(_version_data) > 0
 
-    base_chart = alt.Chart(df_versions)
+    if has_versions:
+        df_versions = pl.DataFrame(
+            _version_data,
+            schema={"version": pl.Utf8, "datetime": pl.Utf8},
+        ).with_columns(datetime=pl.col("datetime").str.to_datetime())
 
-    date_lines = base_chart.mark_rule(strokeDash=[5, 5]).encode(
-        x=alt.X("datetime:T", title="Date"), tooltip=["version:N", "datetime:T"]
-    )
+        base_chart = alt.Chart(df_versions)
 
-    date_text = base_chart.mark_text(angle=270, align="left", dx=15, dy=0).encode(
-        x="datetime:T", y=alt.value(10), text="version:N"
-    )
-    return date_lines, date_text
+        date_lines = base_chart.mark_rule(strokeDash=[5, 5]).encode(
+            x=alt.X("datetime:T", title="Date"), tooltip=["version:N", "datetime:T"]
+        )
+
+        date_text = base_chart.mark_text(angle=270, align="left", dx=15, dy=0).encode(
+            x="datetime:T", y=alt.value(10), text="version:N"
+        )
+    else:
+        date_lines = None
+        date_text = None
+    return date_lines, date_text, has_versions
 
 
 @app.cell
-def _(alt, date_lines, date_text, df, granularity_select, show_versions):
+def _(alt, date_lines, date_text, df, granularity_select, has_versions, show_versions):
     color_title = "Year Added" if granularity_select.value == "Year" else "Quarter Added"
 
     chart = (
@@ -484,7 +490,7 @@ def _(alt, date_lines, date_text, df, granularity_select, show_versions):
     )
 
     out = chart
-    if show_versions.value:
+    if show_versions.value and has_versions:
         out += date_lines + date_text
 
     out = out.properties(
@@ -498,23 +504,26 @@ def _(alt, date_lines, date_text, df, granularity_select, show_versions):
 
 
 @app.cell
-def _(Path, alt, chart, date_lines, date_text, out, repo_name):
+def _(Path, alt, chart, date_lines, date_text, has_versions, out, repo_name):
     Path("charts").mkdir(exist_ok=True)
 
     clean_path = Path("charts") / (repo_name + "-clean.json")
     clean_path.write_text(out.to_json())
 
     versioned_path = Path("charts") / (repo_name + "-versioned.json")
-    versioned_chart = (
-        (chart + date_lines + date_text)
-        .properties(
-            title="Code Archaeology: Lines of Code by Period Added",
-            width=800,
-            height=500,
+    if has_versions:
+        versioned_chart = (
+            (chart + date_lines + date_text)
+            .properties(
+                title="Code Archaeology: Lines of Code by Period Added",
+                width=800,
+                height=500,
+            )
+            .to_dict()
         )
-        .to_dict()
-    )
-    versioned_path.write_text(alt.Chart.from_dict(versioned_chart).to_json())
+        versioned_path.write_text(alt.Chart.from_dict(versioned_chart).to_json())
+    else:
+        versioned_path.write_text(out.to_json())
     return
 
 
