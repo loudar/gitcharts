@@ -86,7 +86,7 @@ def _(mo):
 @app.cell
 def _(mo):
     file_extensions_input = mo.ui.text(
-        value=".py,.js,.ts,.java,.c,.cpp,.h,.go,.rs,.rb,.md",
+        value=".py,.js,.ts,.java,.c,.cpp,.h,.go,.rs,.rb,.md,.cs,.scss,.html",
         label="File extensions to analyze (comma-separated, leave empty for all)",
         full_width=True,
     )
