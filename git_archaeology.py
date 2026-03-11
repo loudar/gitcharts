@@ -330,16 +330,18 @@ def _(cache, datetime, subprocess):
                     for ts in future.result():
                         raw_data.append((commit_date, ts))
                     done_files += 1
+                    prev_commits_done = len(done_commits)
                     done_commits.add(commit_hash)
+                    new_commit_done = len(done_commits) > prev_commits_done
                     if progress_bar:
                         pct = int(done_files / total_files * 100) if total_files else 100
                         progress_bar.update(
                             title=f"Blamed {done_files}/{total_files} files "
                                   f"({len(done_commits)}/{total_commits} commits, {pct}%)"
                         )
-                    if is_script and done_files % max(1, total_files // 40) == 0:
+                    if is_script and new_commit_done:
                         pct = int(done_files / total_files * 100) if total_files else 100
-                        print(f"  [{done_files}/{total_files} files, {len(done_commits)}/{total_commits} commits] {pct}%")
+                        print(f"  [{len(done_commits)}/{total_commits} commits, {done_files}/{total_files} files] {pct}%", flush=True)
         except KeyboardInterrupt:
             if is_script:
                 print("\n  Interrupted.", flush=True)
