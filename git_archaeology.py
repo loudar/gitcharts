@@ -7,6 +7,7 @@
 #     "httpx==0.28.1",
 #     "pydantic>=2.0.0",
 #     "diskcache==5.6.3",
+#     "pygit2>=1.13.0",
 # ]
 # ///
 
@@ -180,7 +181,20 @@ def _(subprocess):
 
 @app.cell(hide_code=True)
 def _(cache, datetime, subprocess):
+    import threading
+    import pygit2
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _thread_local = threading.local()
+
+
+    def _get_thread_repo(repo_path: str) -> pygit2.Repository:
+        """Return a per-thread pygit2.Repository (not safe to share across threads)."""
+        if not hasattr(_thread_local, "repos"):
+            _thread_local.repos = {}
+        if repo_path not in _thread_local.repos:
+            _thread_local.repos[repo_path] = pygit2.Repository(repo_path)
+        return _thread_local.repos[repo_path]
 
 
     def run_git_command(cmd: list[str], repo_path: str) -> str:
@@ -195,7 +209,7 @@ def _(cache, datetime, subprocess):
         )
         if result.returncode != 0:
             raise RuntimeError(f"Git command failed: {result.stderr}")
-        return result.stdout or ""
+        return result.stdout if result.stdout is not None else ""
 
 
     @cache.memoize()
@@ -206,7 +220,7 @@ def _(cache, datetime, subprocess):
             repo_path,
         )
         commits = []
-        for line in output.strip().split("\n"):
+        for line in (output or "").strip().split("\n"):
             if line:
                 parts = line.split()
                 commit_hash = parts[0]
@@ -224,7 +238,7 @@ def _(cache, datetime, subprocess):
             ["git", "ls-tree", "-r", "--name-only", commit_hash],
             repo_path,
         )
-        files = output.strip().split("\n")
+        files = (output or "").strip().split("\n")
         if extensions:
             files = [f for f in files if any(f.endswith(ext) for ext in extensions)]
         return [f for f in files if f]
@@ -233,47 +247,22 @@ def _(cache, datetime, subprocess):
     @cache.memoize()
     def get_blame_info(repo_path: str, commit_hash: str, file_path: str) -> list[int]:
         """
-        Get blame info for a file at a specific commit.
-        Returns list of timestamps for each line.
-
-        Uses --porcelain for structured output; cached per (commit, file) so
-        repeated runs and shared files across commits are fast.
+        Get blame info for a file at a specific commit using pygit2 (libgit2).
+        Returns list of timestamps (one per line). Cached per (repo, commit, file).
         """
         try:
-            output = run_git_command(
-                ["git", "blame", "--porcelain", commit_hash, "--", file_path],
-                repo_path,
-            )
+            repo = _get_thread_repo(repo_path)
+            commit_oid = pygit2.Oid(hex=commit_hash)
+            blame = repo.blame(file_path, newest_commit=commit_oid)
+            timestamps = []
+            for hunk in blame:
+                orig_commit = repo.get(hunk.orig_commit_id)
+                if orig_commit is not None:
+                    timestamps.extend([orig_commit.commit_time] * hunk.lines_in_hunk)
+            return timestamps
         except Exception:
-            # File might be binary, missing, or have other issues
             return []
 
-        # --porcelain format: lines starting with "author-time " contain the timestamp
-        timestamps = []
-        for line in output.split("\n"):
-            if line.startswith("author-time "):
-                timestamps.append(int(line[12:]))
-
-        return timestamps
-
-
-    def analyze_single_commit(
-        repo_path: str,
-        commit_hash: str,
-        commit_date: datetime,
-        extensions: list[str] | None,
-        max_file_workers: int = 16,
-    ) -> list[tuple[datetime, int]]:
-        """Analyze a single commit using parallel file blame."""
-        files = get_tracked_files(repo_path, commit_hash, extensions)
-
-        results = []
-        with ThreadPoolExecutor(max_workers=max_file_workers) as file_executor:
-            futures = {file_executor.submit(get_blame_info, repo_path, commit_hash, f): f for f in files}
-            for future in as_completed(futures):
-                for ts in future.result():
-                    results.append((commit_date, ts))
-        return results
 
     @cache.memoize()
     def sample_commits(
@@ -289,6 +278,7 @@ def _(cache, datetime, subprocess):
             indices[-1] = len(commits) - 1
         return [commits[i] for i in indices]
 
+
     @cache.memoize(ignore=["progress_bar", "is_script"])
     def collect_blame_data(
         repo_path: str,
@@ -296,37 +286,40 @@ def _(cache, datetime, subprocess):
         extensions: list[str] | None,
         progress_bar=None,
         is_script: bool = False,
-        commit_workers: int = 8,
+        workers: int = 32,
     ) -> list[tuple[datetime, int]]:
         """Collect raw blame data from sampled commits.
 
-        Commits run in parallel (commit_workers), each commit blames its files
-        in parallel (16 threads). get_blame_info results are cached per (commit, file)
-        so reruns and shared file history across commits are instant.
+        Builds a flat list of (commit, file) work items and processes them with a
+        single ThreadPoolExecutor. pygit2 (libgit2) replaces subprocess git-blame,
+        eliminating per-file process spawn overhead. Results are cached per
+        (repo, commit, file) so reruns are instant.
         """
-        import time
+        # Collect all (commit_hash, commit_date, file_path) tuples upfront
+        work_items: list[tuple[str, datetime, str]] = []
+        for commit_hash, commit_date in sampled_commits:
+            for f in get_tracked_files(str(repo_path), commit_hash, extensions):
+                work_items.append((commit_hash, commit_date, f))
 
-        raw_data = []
-        total = len(sampled_commits)
-        done = 0
-        last_time = time.time()
+        raw_data: list[tuple[datetime, int]] = []
+        total_commits = len(sampled_commits)
+        done_commits: set[str] = set()
 
-        with ThreadPoolExecutor(max_workers=commit_workers) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(analyze_single_commit, str(repo_path), h, d, extensions): (h, d)
-                for h, d in sampled_commits
+                executor.submit(get_blame_info, str(repo_path), h, f): (h, d)
+                for h, d, f in work_items
             }
             for future in as_completed(futures):
-                commit_hash, _ = futures[future]
-                done += 1
-                now = time.time()
-                step_duration = now - last_time
-                last_time = now
-                if progress_bar:
-                    progress_bar.update(title=f"Analyzed {commit_hash[:8]}...")
-                if is_script:
-                    print(f"  [{done}/{total}] Analyzed {commit_hash[:8]} ({step_duration:.1f}s)")
-                raw_data.extend(future.result())
+                commit_hash, commit_date = futures[future]
+                for ts in future.result():
+                    raw_data.append((commit_date, ts))
+                if commit_hash not in done_commits:
+                    done_commits.add(commit_hash)
+                    if progress_bar:
+                        progress_bar.update(title=f"Analyzed {commit_hash[:8]}...")
+                    if is_script:
+                        print(f"  [{len(done_commits)}/{total_commits}] Analyzed {commit_hash[:8]}")
 
         return raw_data
     return collect_blame_data, get_commit_list, sample_commits
