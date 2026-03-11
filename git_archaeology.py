@@ -261,7 +261,7 @@ def _(cache, datetime, subprocess):
 
 
     def _blame_key(repo_path: str, commit_hash: str, file_path: str) -> str:
-        return f"blame\x00{repo_path}\x00{commit_hash}\x00{file_path}"
+        return f"blame2\x00{commit_hash}\x00{file_path}"
 
 
     def get_blame_info(repo_path: str, commit_hash: str, file_path: str) -> list[int]:
@@ -331,6 +331,7 @@ def _(cache, datetime, subprocess):
                     raw_data.append((commit_date, ts))
 
             # Parallel blame for cache misses
+            new_results: dict[str, list[int]] = {}
             if uncached_files:
                 executor = ThreadPoolExecutor(max_workers=workers)
                 futures = {
@@ -343,10 +344,7 @@ def _(cache, datetime, subprocess):
                         done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
                         for future in done:
                             f = futures[future]
-                            result = future.result()
-                            cache.set(_blame_key(repo_path_str, commit_hash, f), result)
-                            for ts in result:
-                                raw_data.append((commit_date, ts))
+                            new_results[f] = future.result()
                 except KeyboardInterrupt:
                     if is_script:
                         print("\n  Interrupted.", flush=True)
@@ -355,13 +353,23 @@ def _(cache, datetime, subprocess):
                 finally:
                     executor.shutdown(wait=False, cancel_futures=True)
 
+            # Append new blame results to raw_data
+            for f, timestamps in new_results.items():
+                for ts in timestamps:
+                    raw_data.append((commit_date, ts))
+
+            # Batch-write all new results to cache (single burst, not per-file during polling)
+            for f, timestamps in new_results.items():
+                cache.set(_blame_key(repo_path_str, commit_hash, f), timestamps)
+
             elapsed = time.perf_counter() - t0
             n_files = len(files)
             n_miss = len(uncached_files)
+            n_lines = sum(len(ts) for ts in cached_results) + sum(len(ts) for ts in new_results.values())
             msg = (
                 f"[{ci + 1}/{total_commits}] {commit_hash[:8]} — "
-                f"{n_files} files ({n_miss} blamed, {n_files - n_miss} cached) "
-                f"in {elapsed:.1f}s"
+                f"{n_files} files ({n_miss} blamed, {n_files - n_miss} cached), "
+                f"{n_lines} lines in {elapsed:.1f}s"
             )
             if progress_bar:
                 progress_bar.update(title=msg)
