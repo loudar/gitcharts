@@ -181,20 +181,17 @@ def _(subprocess):
 
 @app.cell(hide_code=True)
 def _(cache, datetime, subprocess):
-    import threading
     import pygit2
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-    _thread_local = threading.local()
+    # Repo cache for the main thread (used by _get_changed_files)
+    _main_repos: dict[str, pygit2.Repository] = {}
 
 
-    def _get_thread_repo(repo_path: str) -> pygit2.Repository:
-        """Return a per-thread pygit2.Repository (not safe to share across threads)."""
-        if not hasattr(_thread_local, "repos"):
-            _thread_local.repos = {}
-        if repo_path not in _thread_local.repos:
-            _thread_local.repos[repo_path] = pygit2.Repository(repo_path)
-        return _thread_local.repos[repo_path]
+    def _get_repo(repo_path: str) -> pygit2.Repository:
+        if repo_path not in _main_repos:
+            _main_repos[repo_path] = pygit2.Repository(repo_path)
+        return _main_repos[repo_path]
 
 
     def run_git_command(cmd: list[str], repo_path: str) -> str:
@@ -245,26 +242,33 @@ def _(cache, datetime, subprocess):
 
 
     def _blame_uncached(repo_path: str, commit_hash: str, file_path: str) -> list[int]:
-        """Raw pygit2 blame — no caching. Called from worker threads."""
+        """Run git blame as subprocess (releases GIL → true parallelism with threads)."""
         try:
-            repo = _get_thread_repo(repo_path)
-            commit_oid = pygit2.Oid(hex=commit_hash)
-            blame = repo.blame(file_path, newest_commit=commit_oid)
-
-            # Local cache: commit OID → timestamp (avoids repeated repo.get() for same OID)
-            if not hasattr(_thread_local, "ts_cache"):
-                _thread_local.ts_cache = {}
-            ts_cache = _thread_local.ts_cache
-
+            result = subprocess.run(
+                ["git", "blame", "--porcelain", commit_hash, "--", file_path],
+                cwd=repo_path,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode != 0:
+                return []
+            # --porcelain: lines starting with "author-time " have the timestamp
+            # Using find() is faster than startswith() per line for large output
+            out = result.stdout
             timestamps = []
-            for hunk in blame:
-                oid = hunk.orig_commit_id
-                ts = ts_cache.get(oid)
-                if ts is None:
-                    orig_commit = repo.get(oid)
-                    ts = orig_commit.commit_time if orig_commit is not None else 0
-                    ts_cache[oid] = ts
-                timestamps.extend([ts] * hunk.lines_in_hunk)
+            pos = 0
+            marker = "author-time "
+            marker_len = 12
+            while True:
+                pos = out.find(marker, pos)
+                if pos == -1:
+                    break
+                end = out.find("\n", pos + marker_len)
+                if end == -1:
+                    end = len(out)
+                timestamps.append(int(out[pos + marker_len:end]))
+                pos = end
             return timestamps
         except Exception:
             return []
@@ -303,7 +307,7 @@ def _(cache, datetime, subprocess):
         """Get set of file paths that changed between two commits using pygit2 diff.
         Returns None on failure (caller should re-blame everything)."""
         try:
-            repo = _get_thread_repo(repo_path)
+            repo = _get_repo(repo_path)
             prev_commit = repo.get(pygit2.Oid(hex=prev_hash))
             curr_commit = repo.get(pygit2.Oid(hex=curr_hash))
             diff = repo.diff(prev_commit.tree, curr_commit.tree)
