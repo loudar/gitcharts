@@ -5,9 +5,7 @@ import json
 from pathlib import Path
 
 
-def main():
-    charts_dir = Path("charts")
-
+def generate_repos_list(charts_dir: Path = Path("charts")):
     if not charts_dir.exists():
         print("charts/ directory not found")
         return
@@ -35,6 +33,10 @@ def main():
     print(f"Generated {output_path} with {len(repos)} repositories")
     for repo in repos:
         print(f"  - {repo}")
+
+
+def main():
+    generate_repos_list()
 
 
 if __name__ == "__main__":

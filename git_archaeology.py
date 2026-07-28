@@ -593,6 +593,8 @@ def _(alt, date_lines, date_text, df, granularity_select, has_versions, show_ver
 
 @app.cell
 def _(Path, alt, chart, date_lines, date_text, has_versions, out, repo_name):
+    from generate_repos_list import generate_repos_list
+
     Path("charts").mkdir(exist_ok=True)
 
     clean_path = Path("charts") / (repo_name + "-clean.json")
@@ -612,6 +614,7 @@ def _(Path, alt, chart, date_lines, date_text, has_versions, out, repo_name):
         versioned_path.write_text(alt.Chart.from_dict(versioned_chart).to_json())
     else:
         versioned_path.write_text(out.to_json())
+    generate_repos_list()
     return
 
 
