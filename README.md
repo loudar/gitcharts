@@ -18,5 +18,5 @@ uv run git_archaeology.py --repo https://github.com/marimo-team/marimo --samples
 
 **Arguments:**
 
-- `--repo` (required) — Repository URL (HTTPS)
+- `--repo` (required) — Repository URL (HTTPS) or local path to an existing checkout
 - `--samples` (optional, default: 100) — Number of commits to sample

@@ -64,7 +64,7 @@ def _():
 def _(mo):
     repo_url_input = mo.ui.text(
         value="https://github.com/marimo-team/marimo",
-        label="Repository URL (HTTPS)",
+        label="Repository URL (HTTPS) or local path",
         full_width=True,
     )
     repo_url_input
@@ -87,7 +87,7 @@ def _(mo):
 @app.cell
 def _(mo):
     file_extensions_input = mo.ui.text(
-        value=".py,.js,.ts,.java,.c,.cpp,.h,.go,.rs,.rb,.md,.cs,.scss,.html",
+        value=".py,.js,.ts,.java,.c,.cpp,.h,.go,.rs,.rb,.md,.cs,.scss,.html,.swift,.m,.mm",
         label="File extensions to analyze (comma-separated, leave empty for all)",
         full_width=True,
     )
@@ -119,7 +119,7 @@ def _():
     from pydantic_core import PydanticUndefined
 
     class RepoParams(BaseModel):
-        repo: str = Field(description="Repository URL (HTTPS)")
+        repo: str = Field(description="Repository URL (HTTPS) or local path")
         samples: int = Field(default=100, description="Number of commits to sample")
 
     return (RepoParams,)
@@ -131,7 +131,7 @@ def _(RepoParams, mo):
 
     if mo.app_meta().mode == "script":
         if "help" in cli_args or len(cli_args) == 0:
-            print("Usage: uv run git_archaeology.py --repo <url> [--samples <n>]")
+            print("Usage: uv run git_archaeology.py --repo <url-or-path> [--samples <n>]")
             print()
             for name, field in RepoParams.model_fields.items():
                 default = " (required)" if field.default is PydanticUndefined else f" (default: {field.default})"
@@ -151,6 +151,10 @@ def _(subprocess):
     DOWNLOADS_DIR = Path(".downloads")
 
 
+    def is_remote_repo(repo_ref: str) -> bool:
+        return repo_ref.lower().startswith(("http://", "https://"))
+
+
     def get_cached_repo_path(repo_url: str) -> Path:
         """Get the cached path for a repo URL, using a hash for uniqueness."""
         repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
@@ -158,10 +162,18 @@ def _(subprocess):
         return DOWNLOADS_DIR / f"{repo_name}-{url_hash}"
 
 
-    def clone_or_update_repo(repo_url: str) -> Path:
-        """Clone repo if not cached, otherwise return cached path."""
+    def clone_or_update_repo(repo_ref: str) -> Path:
+        """Use a local checkout directly, or clone/update a remote repository."""
+        if not is_remote_repo(repo_ref):
+            repo_path = Path(repo_ref).expanduser().resolve()
+            if not repo_path.exists():
+                raise FileNotFoundError(f"Local repository does not exist: {repo_path}")
+            if not repo_path.is_dir():
+                raise NotADirectoryError(f"Local repository path is not a directory: {repo_path}")
+            return repo_path
+
         DOWNLOADS_DIR.mkdir(exist_ok=True)
-        repo_path = get_cached_repo_path(repo_url)
+        repo_path = get_cached_repo_path(repo_ref)
 
         if repo_path.exists():
             # Repo already cached, fetch latest
@@ -172,11 +184,11 @@ def _(subprocess):
         else:
             # Clone fresh
             subprocess.run(
-                ["git", "clone", "--progress", repo_url, str(repo_path)],
+                ["git", "clone", "--progress", repo_ref, str(repo_path)],
                 check=True,
             )
         return repo_path
-    return Path, clone_or_update_repo
+    return Path, clone_or_update_repo, is_remote_repo
 
 
 @app.cell(hide_code=True)
@@ -516,14 +528,21 @@ def _(granularity_select, pl, raw_df):
 
 
 @app.cell
-def _(mo, repo_params, repo_url_input):
+def _(Path, is_remote_repo, mo, repo_params, repo_url_input):
     import httpx
 
     _repo = repo_params.repo if mo.app_meta().mode == "script" else repo_url_input.value
-    parts = _repo.split("/")
-    repo_name = parts[-2] if _repo.endswith("/") else parts[-1]
+    if is_remote_repo(_repo):
+        parts = _repo.rstrip("/").split("/")
+        repo_name = parts[-1].replace(".git", "")
+    else:
+        repo_name = Path(_repo).expanduser().resolve().name
 
-    res = httpx.get(f"https://pypi.org/pypi/{repo_name}/json").json()
+    res = (
+        httpx.get(f"https://pypi.org/pypi/{repo_name}/json").json()
+        if is_remote_repo(_repo)
+        else {"releases": {}}
+    )
     return repo_name, res
 
 
