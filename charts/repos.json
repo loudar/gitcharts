@@ -1,10 +1,54 @@
-[
-  "datasette",
-  "diskcache",
-  "django",
-  "marimo",
-  "narwhals",
-  "scikit-lego",
-  "sentence-transformers",
-  "wandb"
-]
+{
+  "datasette": [
+    "clean",
+    "versioned"
+  ],
+  "diskcache": [
+    "clean",
+    "versioned"
+  ],
+  "django": [
+    "clean",
+    "versioned"
+  ],
+  "fastapi": [
+    "clean",
+    "versioned"
+  ],
+  "flask": [
+    "clean",
+    "versioned"
+  ],
+  "marimo": [
+    "clean",
+    "versioned"
+  ],
+  "narwhals": [
+    "clean",
+    "versioned"
+  ],
+  "notebook": [
+    "clean",
+    "versioned"
+  ],
+  "python-diskcache": [
+    "clean",
+    "versioned"
+  ],
+  "scikit-learn": [
+    "clean",
+    "versioned"
+  ],
+  "scikit-lego": [
+    "clean",
+    "versioned"
+  ],
+  "sentence-transformers": [
+    "clean",
+    "versioned"
+  ],
+  "wandb": [
+    "clean",
+    "versioned"
+  ]
+}
