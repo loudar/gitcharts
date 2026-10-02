@@ -27,6 +27,9 @@
     "clean",
     "versioned"
   ],
+  "neuretina": [
+    "clean"
+  ],
   "notebook": [
     "clean",
     "versioned"

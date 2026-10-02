@@ -95,16 +95,6 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    granularity_select = mo.ui.dropdown(
-        options=["Year", "Quarter"],
-        value="Quarter",
-        label="Time granularity",
-    )
-    return (granularity_select,)
-
-
-@app.cell
-def _(granularity_select, mo):
     version_source = mo.ui.dropdown(
         options=["none", "git tags", "pypi"],
         value="git tags",
@@ -112,7 +102,7 @@ def _(granularity_select, mo):
     )
     show_versions = mo.ui.checkbox(label="show versions")
     invert_layers = mo.ui.checkbox(label="invert layers")
-    mo.hstack([version_source, granularity_select, show_versions, invert_layers])
+    mo.hstack([version_source, show_versions, invert_layers])
     return invert_layers, show_versions, version_source
 
 
@@ -478,20 +468,27 @@ def _(mo):
 
 
 @app.cell
-def _(granularity_select, pl, raw_df):
-    granularity = granularity_select.value
+def _(pl, raw_df):
+    # Split the repository's whole lifespan into 12 equal sections, whatever
+    # the elapsed time: calendar quarters would leave most sections empty on
+    # short histories and crowd long ones.
+    SECTIONS = 12
+    bounds = raw_df.select(
+        pl.col("line_timestamp").min().alias("start"),
+        pl.col("line_timestamp").max().alias("end"),
+    ).row(0, named=True)
+    start = bounds["start"] or 0
+    span = max(1, (bounds["end"] or start) - start)
 
-    # Vectorized period derivation using native Polars dt ops
-    ts_col = pl.from_epoch(pl.col("line_timestamp"), time_unit="s")
-
-    if granularity == "Year":
-        period_expr = ts_col.dt.year().cast(pl.Utf8).alias("period")
-    else:  # Quarter
-        period_expr = pl.concat_str(
-            ts_col.dt.year().cast(pl.Utf8),
-            pl.lit("-Q"),
-            ((ts_col.dt.month() - 1) // 3 + 1).cast(pl.Utf8),
-        ).alias("period")
+    # The newest timestamp would land on section 13 without the clamp.
+    section = pl.min_horizontal(
+        ((pl.col("line_timestamp") - start) * SECTIONS) // span,
+        pl.lit(SECTIONS - 1),
+    )
+    period_expr = pl.concat_str(
+        pl.lit("Section "),
+        (section + 1).cast(pl.Utf8).str.zfill(2),
+    ).alias("period")
 
     df = (
         raw_df.with_columns(period_expr)
@@ -600,11 +597,10 @@ def _(
     date_lines,
     date_text,
     df,
-    granularity_select,
     invert_layers,
     show_versions,
 ):
-    color_title = "Year Added" if granularity_select.value == "Year" else "Quarter Added"
+    color_title = "Section Added"
     sort_order = "descending" if invert_layers.value else "ascending"
 
     chart = (
