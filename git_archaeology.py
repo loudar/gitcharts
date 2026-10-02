@@ -70,7 +70,7 @@ def _(mo):
         .batch(
             repo_url=mo.ui.text(
                 value="https://github.com/marimo-team/marimo",
-                label="Repository URL (HTTPS)",
+                label="Repository URL (HTTPS) or local path",
                 full_width=True,
             ),
             file_extensions=mo.ui.text(
@@ -122,7 +122,7 @@ def _():
 
 
     class RepoParams(BaseModel):
-        repo: str = Field(description="Repository URL (HTTPS)")
+        repo: str = Field(description="Repository URL (HTTPS), owner/repo, or local path")
         samples: int = Field(default=200, description="Number of commits to sample")
         file_extensions: str = Field(
             default=".py,.js,.ts,.java,.c,.cpp,.h,.go,.rs,.rb,.md,.pyx,.cu,.rst",
@@ -169,10 +169,23 @@ def _(subprocess):
         return DOWNLOADS_DIR / f"{repo_name}-{url_hash}"
 
 
-    def clone_or_update_repo(repo_url: str) -> Path:
-        """Clone repo if not cached, otherwise return cached path."""
+    def is_remote_repo(repo_ref: str) -> bool:
+        """True for URLs and short owner/repo refs; false for local paths."""
+        return repo_ref.lower().startswith(("http://", "https://", "git@"))
+
+
+    def clone_or_update_repo(repo_ref: str) -> Path:
+        """Use a local checkout directly, or clone/update a remote repository."""
+        if not is_remote_repo(repo_ref):
+            repo_path = Path(repo_ref).expanduser().resolve()
+            if not repo_path.exists():
+                raise FileNotFoundError(f"Local repository does not exist: {repo_path}")
+            if not repo_path.is_dir():
+                raise NotADirectoryError(f"Local repository path is not a directory: {repo_path}")
+            return repo_path
+
         DOWNLOADS_DIR.mkdir(exist_ok=True)
-        repo_path = get_cached_repo_path(repo_url)
+        repo_path = get_cached_repo_path(repo_ref)
 
         if repo_path.exists():
             # Repo already cached, fetch latest
@@ -184,7 +197,7 @@ def _(subprocess):
         else:
             # Clone fresh
             subprocess.run(
-                ["git", "clone", repo_url, str(repo_path)],
+                ["git", "clone", repo_ref, str(repo_path)],
                 capture_output=True,
                 check=True,
             )
@@ -378,6 +391,7 @@ def _(Path, cache, datetime, hashlib, pl, subprocess):
 
 @app.cell
 def _(
+    Path,
     clone_or_update_repo,
     get_commit_list,
     mo,
@@ -396,9 +410,15 @@ def _(
         if mo.app_meta().mode == "script"
         else params_form.value["repo_url"].strip()
     )
-    # Accept short GitHub references like "koaning/scikit-lego"
+    # Accept short GitHub references like "koaning/scikit-lego", but leave
+    # local paths alone (an existing directory wins over the owner/repo form).
     if "/" in repo_url and not repo_url.startswith(("http://", "https://", "git@")):
-        repo_url = f"https://github.com/{repo_url}"
+        local_candidate = Path(repo_url).expanduser()
+        repo_url = (
+            str(local_candidate.resolve())
+            if local_candidate.is_dir()
+            else f"https://github.com/{repo_url}"
+        )
     with mo.status.spinner(f"Cloning/updating repository..."):
         repo_path = clone_or_update_repo(repo_url)
 
